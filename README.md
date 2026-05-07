@@ -107,3 +107,5 @@ Visualization tools:
 - ROC analysis
 - Odds ratio analysis
 - Model comparison metrics
+
+Note: *This project was developed as a part of the Data Science and Statistical Modeling in R (BS845) coursework at Boston University.*
