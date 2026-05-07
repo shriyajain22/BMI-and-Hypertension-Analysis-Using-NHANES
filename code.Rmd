@@ -1,0 +1,655 @@
+---
+title: "Final Project"
+author: "Shriya Jain"
+output: word_document
+---
+# LOADING THE PACKAGES 
+```{r}
+# Loading all the required packages 
+packages <- c(
+  "tidyverse",
+  "janitor",
+  "NHANES",
+  "naniar",
+  "ResourceSelection",
+  "pROC",
+  "car",
+  "broom",
+  "forcats",
+  "patchwork"
+)
+
+installed <- rownames(installed.packages())
+for (p in packages) {
+  if (!(p %in% installed)) install.packages(p)
+}
+
+library(tidyverse)
+library(janitor)
+library(NHANES)
+library(naniar)
+library(ResourceSelection)
+library(pROC)
+library(car)
+library(broom)
+library(forcats)
+library(patchwork)
+library(GGally)
+```
+
+# LOADING THE DATA
+```{r}
+# Loading the NHANES data
+data("NHANES")
+
+# Cleaning the column names
+nhanes <- NHANES %>%
+  clean_names()
+
+# Checking the dimensions of the data
+dim(nhanes)
+```
+
+# KEEPING ONE ROW PER PERSON
+```{r}
+# Keeping the distinct ids 
+nhanes_unique <- nhanes %>%
+  distinct(id, .keep_all = TRUE)
+
+# Checking the dimensions after removing duplicate ids
+dim(nhanes_unique)
+```
+
+# SELECTING THE VARIABLES OF INTEREST 
+```{r}
+# Selecting the variables from the NHANES data 
+dat <- nhanes_unique %>%
+  select(
+    id,
+    survey_yr,
+    age,
+    gender,
+    race1,
+    education,
+    hh_income,
+    poverty,
+    bmi,
+    bmi_who,
+    bp_sys_ave,
+    bp_dia_ave,
+    tot_chol,
+    diabetes,
+    smoke_now,
+    alcohol12plus_yr,
+    sleep_hrs_night,
+    phys_active
+  )
+```
+
+# FILTERING THE DATA BASED ON AGE AND BMI CUTOFFS
+```{r}
+dat <- dat %>%
+  filter(age >= 18) %>%
+  mutate(
+    # Filtering for hypertension with systolic >= 140 or diastolic >= 90
+    hypertension = case_when(
+      bp_sys_ave >= 140 | bp_dia_ave >= 90 ~ 1,
+      !is.na(bp_sys_ave) & !is.na(bp_dia_ave) ~ 0,
+      TRUE ~ NA_real_
+    ),
+
+    # Filtering based on the standard adult cutoffs for BMI
+    bmi_category = case_when(
+      bmi < 18.5 ~ "Underweight",
+      bmi >= 18.5 & bmi < 25 ~ "Normal",
+      bmi >= 25 & bmi < 30 ~ "Overweight",
+      bmi >= 30 ~ "Obese",
+      TRUE ~ NA_character_
+    )
+  )
+```
+
+# CONVERTING THE VARIABLES INTO FACTORS 
+```{r}
+dat <- dat %>%
+  mutate(
+    survey_yr = factor(survey_yr),
+    gender = factor(gender),
+    race1 = factor(race1),
+    education = factor(education),
+    hh_income = factor(hh_income),
+    diabetes = factor(diabetes),
+    smoke_now = factor(smoke_now),
+    alcohol12plus_yr = factor(alcohol12plus_yr),
+    phys_active = factor(phys_active),
+    hypertension = factor(hypertension, levels = c(0, 1), labels = c("No", "Yes")),
+    bmi_category = factor(
+      bmi_category,
+      levels = c("Normal", "Underweight", "Overweight", "Obese")
+    )
+  )
+
+# Checking the cleaned dataset
+summary(dat)
+```
+
+# CHECKING FOR THE MISSING DATA
+```{r}
+# Checking the missing values by variable 
+colSums(is.na(dat))
+```
+
+# IMPUTING FOR THE MISSING DATA
+```{r}
+dat_imp <- dat
+
+# Creating a function to calculate mode 
+get_mode <- function(x) {
+  ux <- unique(x[!is.na(x)])
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# Formulating mean imputation for numeric variables
+numeric_vars <- names(dat_imp)[sapply(dat_imp, is.numeric)]
+for (v in numeric_vars) {
+  dat_imp[[v]][is.na(dat_imp[[v]])] <- mean(dat_imp[[v]], na.rm = TRUE)
+}
+
+# Formulating mode imputation for categorical variables
+factor_vars <- names(dat_imp)[sapply(dat_imp, is.factor)]
+for (v in factor_vars) {
+  mode_val <- get_mode(dat_imp[[v]])
+  dat_imp[[v]][is.na(dat_imp[[v]])] <- mode_val
+}
+
+# Confirming the results after imputation
+colSums(is.na(dat_imp))
+```
+
+# EXPLORATORY DATA ANALYSIS
+```{r}
+# Creating age groups for subgroup comparisons
+dat_imp <- dat_imp %>%
+  mutate(
+    age_group = cut(
+      age,
+      breaks = c(18, 30, 45, 60, Inf),
+      labels = c("18-29", "30-44", "45-59", "60+"),
+      right = FALSE
+    )
+  )
+
+# Creating consistent color for hypertension
+hyp_cols <- c(
+  "No" = "#F8766D",
+  "Yes" = "#00BFC4"
+)
+
+# Creating consistent color for sex
+sex_cols <- c(
+  "female" = "#E69F00",
+  "male"   = "#56B4E9"
+)
+
+# Creating consistent color for age groups 
+age_cols <- c(
+  "18-29" = "#4E79A7",
+  "30-44" = "#59A14F",
+  "45-59" = "#F28E2B",
+  "60+"   = "#E15759"
+)
+
+# Creating consistent color for BMI
+bmi_cat_cols <- c(
+  "Underweight" = "#8DD3C7",
+  "Normal"      = "#80B1D3",
+  "Overweight"  = "#FDB462",
+  "Obese"       = "#FB8072"
+)
+
+# Creating consistent color for race
+race_cols <- c(
+  "Mexican"    = "#66C2A5",
+  "Hispanic"      = "#FC8D62",
+  "White"  = "#8DA0CB",
+  "Black"  = "#E78AC3",
+  "Other"          = "#A6D854"
+)
+
+common_theme <- theme_minimal(base_size = 14)
+
+# DISTRIBUTION PLOTS
+# Distribution of BMI
+dist_plot_bmi <- ggplot(dat_imp, aes(x = bmi)) +
+  geom_histogram(binwidth = 2, fill = "#4E79A7", color = "black") +
+  labs(
+    title = "BMI Distribution",
+    x = "Body Mass Index (BMI)",
+    y = "Count"
+  ) +
+  common_theme
+
+# Distribution of Age
+dist_plot_age <- ggplot(dat_imp, aes(x = age)) +
+  geom_histogram(binwidth = 2, fill = "#F28E2B", color = "black") +
+  labs(
+    title = "Age Distribution",
+    x = "Age",
+    y = "Count"
+  ) +
+  common_theme
+
+# Distribution of Hypertension
+dist_plot_hyp <- ggplot(dat_imp, aes(x = hypertension, fill = hypertension)) +
+  geom_bar() +
+  scale_fill_manual(values = hyp_cols) +
+  labs(
+    title = "Hypertension Distribution",
+    x = "Hypertension Status",
+    y = "Count"
+  ) +
+  common_theme +
+  theme(legend.position = "none")
+
+# PLOTS FOR HYPERTENSION AND AGE, SEX, RACE
+# Hypertension proportion by age group
+plot_hyp_age <- ggplot(dat_imp, aes(x = age_group, fill = hypertension)) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = hyp_cols) +
+  labs(
+    title = "Hypertension Proportion by Age Group",
+    x = "Age Group",
+    y = "Proportion",
+    fill = "Hypertension"
+  ) +
+  common_theme
+
+# Hypertension proportion by sex
+plot_hyp_sex <- ggplot(dat_imp, aes(x = gender, fill = hypertension)) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = hyp_cols) +
+  labs(
+    title = "Hypertension Proportion by Sex",
+    x = "Sex",
+    y = "Proportion",
+    fill = "Hypertension"
+  ) +
+  common_theme
+
+# Hypertension proportion by race
+plot_hyp_race <- ggplot(dat_imp, aes(x = race1, fill = hypertension)) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = hyp_cols) +
+  labs(
+    title = "Hypertension Proportion by Race",
+    x = "Race",
+    y = "Proportion",
+    fill = "Hypertension"
+  ) +
+  common_theme +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# RELATIONSHIP PLOTS
+# Plot for capturing BMI and hypertension 
+plot_bmi_hyp <- ggplot(dat_imp, aes(x = hypertension, y = bmi, fill = hypertension)) +
+  geom_boxplot() +
+  scale_fill_manual(values = hyp_cols) +
+  labs(
+    title = "BMI by Hypertension Status",
+    x = "Hypertension Status",
+    y = "BMI"
+  ) +
+  common_theme +
+  theme(legend.position = "none")
+
+# Plot for capturing systolic blood pressure and BMI
+plot_sys_bmi <- ggplot(dat_imp, aes(x = bmi_category, y = bp_sys_ave, fill = bmi_category)) +
+  geom_boxplot() +
+  scale_fill_manual(values = bmi_cat_cols) +
+  labs(
+    title = "Systolic Blood Pressure by BMI Category",
+    x = "BMI Category",
+    y = "Average Systolic Blood Pressure"
+  ) +
+  common_theme +
+  theme(legend.position = "none")
+
+# Plot for capturing BMI and age group
+plot_bmi_age <- ggplot(dat_imp, aes(x = age_group, y = bmi, fill = age_group)) +
+  geom_boxplot() +
+  scale_fill_manual(values = age_cols) +
+  labs(
+    title = "BMI by Age Group",
+    x = "Age Group",
+    y = "BMI"
+  ) +
+  common_theme +
+  theme(legend.position = "none")
+
+# Plot for capturing systolic blood pressure and age group
+plot_sys_age <- ggplot(dat_imp, aes(x = age_group, y = bp_sys_ave, fill = age_group)) +
+  geom_boxplot() +
+  scale_fill_manual(values = age_cols) +
+  labs(
+    title = "Systolic Blood Pressure by Age Group",
+    x = "Age Group",
+    y = "Average Systolic Blood Pressure"
+  ) +
+  common_theme +
+  theme(legend.position = "none")
+
+# Plot for capturing BMI and sex
+plot_bmi_sex <- ggplot(dat_imp, aes(x = gender, y = bmi, fill = gender)) +
+  geom_boxplot() +
+  scale_fill_manual(values = sex_cols) +
+  labs(
+    title = "BMI by Sex",
+    x = "Sex",
+    y = "BMI"
+  ) +
+  common_theme +
+  theme(legend.position = "none")
+
+# Plot for capturing systolic blood pressure and sex
+plot_sys_sex <- ggplot(dat_imp, aes(x = gender, y = bp_sys_ave, fill = gender)) +
+  geom_boxplot() +
+  scale_fill_manual(values = sex_cols) +
+  labs(
+    title = "Systolic Blood Pressure by Sex",
+    x = "Sex",
+    y = "Average Systolic Blood Pressure"
+  ) +
+  common_theme +
+  theme(legend.position = "none")
+
+# Plot for capturing BMI and race
+plot_bmi_race <- ggplot(dat_imp, aes(x = race1, y = bmi, fill = race1)) +
+  geom_boxplot() +
+  scale_fill_manual(values = race_cols) +
+  labs(
+    title = "BMI by Race",
+    x = "Race",
+    y = "BMI"
+  ) +
+  common_theme +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# Plot for capturing systolic blood pressure and race
+plot_sys_race <- ggplot(dat_imp, aes(x = race1, y = bp_sys_ave, fill = race1)) +
+  geom_boxplot() +
+  scale_fill_manual(values = race_cols) +
+  labs(
+    title = "Systolic Blood Pressure by Race",
+    x = "Race",
+    y = "Average Systolic Blood Pressure"
+  ) +
+  common_theme +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+
+# PRINTING THE PLOTS
+# Printing the distribution plots
+dist_plot_bmi
+dist_plot_age
+dist_plot_hyp
+plot_hyp_age
+plot_hyp_sex
+plot_hyp_race
+
+# Printing the relationship plots 
+plot_bmi_hyp
+plot_sys_bmi
+plot_bmi_age
+plot_sys_age
+plot_bmi_sex
+plot_sys_sex
+plot_bmi_race
+plot_sys_race
+```
+
+```{r}
+# Correlation Matrix
+dat_imp %>%
+  select(bmi, age, bp_sys_ave, bp_dia_ave, tot_chol) %>%
+  ggpairs(title = "Correlation Matrix of Continuous Variables")
+```
+
+# ADDING DESCRIPTIVE SUMMARIES 
+```{r}
+summary(dat_imp)
+```
+
+# STRATISFIED SUMMARIES
+```{r}
+# Summary for BMI and hypertension
+dat_imp %>%
+  group_by(hypertension) %>%
+  summarise(
+    mean_bmi = mean(bmi, na.rm = TRUE),
+    sd_bmi = sd(bmi, na.rm = TRUE)
+  )
+
+# Summary for age and hypertension
+dat_imp %>%
+  group_by(hypertension) %>%
+  summarise(
+    mean_age = mean(age, na.rm = TRUE),
+    sd_age = sd(age, na.rm = TRUE)
+  )
+
+# Summary for BP and hypertension
+dat_imp %>%
+  group_by(hypertension) %>%
+  summarise(
+    mean_sys = mean(bp_sys_ave, na.rm = TRUE),
+    mean_dia = mean(bp_dia_ave, na.rm = TRUE)
+  )
+```
+
+# CATEGORICAL SUMMARIES
+```{r}
+# Summary for distribution of sex
+prop.table(table(dat_imp$gender))
+
+# Summary for distribution of race
+prop.table(table(dat_imp$race1))
+
+# Summary for distribution of hypertension prevelance
+prop.table(table(dat_imp$hypertension))
+```
+
+# FITTING THE LOGISTIC REGRESSION MODELS 
+```{r}
+# Creating model 1 for baseline 
+model1 <- glm(hypertension ~ 1, data = dat_imp, family = binomial)
+
+# Creating model 2 with BMI as a continuous predictor
+model2 <- glm(hypertension ~ bmi + age + gender + race1,
+              data = dat_imp,
+              family = binomial)
+
+# Creating model 3 with BMI as a categorical predictor
+model3 <- glm(hypertension ~ bmi_category + age + gender + race1,
+              data = dat_imp,
+              family = binomial)
+```
+
+```{r}
+# Getting a summary for all the models 
+summary(model1)
+summary(model2)
+summary(model3)
+```
+
+# COMPUTING THE ODDS RATIO AND 95% CI
+```{r}
+# Creating a function to extract odds ratios
+or_table <- function(model) {
+  tidy(model, conf.int = TRUE, exponentiate = TRUE) %>%
+    rename(
+      odds_ratio = estimate,
+      conf_low = conf.low,
+      conf_high = conf.high
+    )
+}
+
+# Creating a table to capture the odds ratios for each model
+or_model1 <- or_table(model1)
+or_model2 <- or_table(model2)
+or_model3 <- or_table(model3)
+
+# Printing the tables 
+or_model1
+or_model2
+or_model3
+```
+
+# COMPARISON BETWEEN DIFFERENT MODELS 
+```{r}
+# Comparing baseline model to continuous BMI model using likelihood ratio test
+anova(model1, model2, test = "LRT")
+
+# Comparing baseline model to categorical BMI model using likelihood ratio test
+anova(model1, model3, test = "LRT")
+
+# Comparing AIC and BIC across all models
+AIC(model1, model2, model3)
+BIC(model1, model2, model3)
+```
+
+# PREPARING NUMERIC HYPERTENSION OUTCOME FOR DIAGNOSTICS 
+```{r}
+# Creating numeric hypertension variable for diagnostics
+dat_imp <- dat_imp %>%
+  mutate(htn_num = ifelse(hypertension == "Yes", 1, 0))
+```
+
+# COMPUTING THE HOSMER LEMESHOW TEST 
+```{r}
+# Computing Hosmer-Lemeshow goodness-of-fit test for model 2 and model 3
+hoslem.test(dat_imp$htn_num, fitted(model2), g = 10)
+hoslem.test(dat_imp$htn_num, fitted(model3), g = 10)
+```
+
+# FORMULATING THE ROC CURVES AND AUC 
+```{r}
+# Creating ROC objects for each model
+roc1 <- roc(dat_imp$htn_num, fitted(model1))
+roc2 <- roc(dat_imp$htn_num, fitted(model2))
+roc3 <- roc(dat_imp$htn_num, fitted(model3))
+
+# Printing AUC values
+auc(roc1)
+auc(roc2)
+auc(roc3)
+
+# Plotting ROC curves
+plot(roc1, main = "ROC Curve Comparison for Logistic Regression Models", col = "blue")
+plot(roc2, add = TRUE, col = "red")
+plot(roc3, add = TRUE, col = "darkgreen")
+
+legend(
+  "bottomright",
+  legend = c(
+    paste("Model 1 AUC =", round(auc(roc1), 3)),
+    paste("Model 2 AUC =", round(auc(roc2), 3)),
+    paste("Model 3 AUC =", round(auc(roc3), 3))
+  ),
+  col = c("blue", "red", "darkgreen"),
+  lty = 1,
+  cex = 0.8
+)
+```
+# CHECKING FOR MULTICOLLINEARITY 
+```{r}
+# Checking for the variance influence factors for the models 
+vif(model2)
+vif(model3)
+```
+
+# CHECKING THE LINEARITY FOR CONTINUOUS PREDICTORS 
+```{r}
+# Formulating the predicted probabilties from model 2
+dat_imp$pred_prob <- fitted(model2)
+
+pred_race <- dat_imp %>%
+  group_by(race1) %>%
+  summarise(pred_prob = mean(pred_prob, na.rm = TRUE))
+
+# Plot for predictive probability of hypertension and BMI
+ggplot(dat_imp, aes(x = bmi, y = pred_prob)) +
+  geom_point(alpha = 0.4, color = "steelblue") +
+  geom_smooth(se = TRUE, color = "red") +
+  labs(
+    title = "Predicted Probability of Hypertension and BMI",
+    x = "BMI",
+    y = "Predicted Probability"
+  ) +
+  theme_minimal()
+
+# Plot for predictive probability of hypertension by BMI and age
+ggplot(dat_imp, aes(x = age, y = pred_prob)) +
+  geom_point(alpha = 0.4, color = "darkorange") +
+  geom_smooth(se = TRUE, color = "red") +
+  labs(
+    title = "Predicted Probability of Hypertension by BMI and Age",
+    x = "Age",
+    y = "Predicted Probability"
+  ) +
+  theme_minimal()
+
+# Plot for predictive probability of hypertension by BMI and sex
+ggplot(dat_imp, aes(x = bmi, y = pred_prob, color = gender)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(se = FALSE) +
+  labs(
+    title = "Predicted Probability of Hypertension by BMI and Sex",
+    x = "BMI",
+    y = "Predicted Probability",
+    color = "Sex"
+  ) +
+  theme_minimal()
+
+
+# Plot for predictive probability of hypertension by BMI and race
+ggplot(dat_imp, aes(x = bmi, y = pred_prob, color = race1)) +
+  geom_point(alpha = 0.15) +
+  geom_smooth(se = FALSE, linewidth = 1) +
+  labs(
+    title = "Predicted Probability of Hypertension by BMI and Race",
+    x = "BMI",
+    y = "Predicted Probability",
+    color = "Race"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+# FORMULATING THE FOREST PLOT FOR ODDS RATIO
+```{r}
+# Extracting ORs from model2
+forest_data <- tidy(model2, exponentiate = TRUE, conf.int = TRUE) %>%
+  filter(term != "(Intercept)")
+
+# Cleaning the labels
+forest_data$term <- factor(forest_data$term, levels = rev(forest_data$term))
+
+# Creating a forest plot for the odds ratios
+ggplot(forest_data, aes(x = term, y = estimate)) +
+  geom_point(color = "darkblue", size = 2) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  coord_flip() +
+  labs(
+    title = "Odds Ratios for Hypertension",
+    x = "Predictors",
+    y = "Odds Ratio (95% CI)"
+  ) +
+  theme_minimal()
+```
+
